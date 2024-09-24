@@ -14,6 +14,7 @@ import java.io.PrintStream;
 import java.io.Reader;
 import java.io.StringReader;
 import java.lang.annotation.Annotation;
+import java.lang.constant.ClassDesc;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -31,6 +32,11 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.stream.Collectors;
 
+import io.github.dmlloyd.classfile.extras.reflect.AccessFlag;
+import io.quarkus.gizmo2.ConstructorDesc;
+import io.quarkus.gizmo2.FieldDesc;
+import io.quarkus.gizmo2.InstanceFieldVar;
+import io.quarkus.gizmo2.ParamVar;
 import jakarta.enterprise.event.Event;
 import jakarta.enterprise.util.AnnotationLiteral;
 import jakarta.inject.Inject;
@@ -455,46 +461,45 @@ class GitHubAppProcessor {
                 .values()) {
             for (EventAnnotationLiteral eventAnnotationLiteral : eventDispatchingConfiguration.getEventAnnotationLiterals()) {
                 String literalClassName = getLiteralClassName(eventAnnotationLiteral.getName());
-
-                String signature = SignatureBuilder.forClass()
-                        .setSuperClass(parameterizedType(classType(AnnotationLiteral.class),
-                                classType(eventAnnotationLiteral.getName())))
-                        .addInterface(classType(eventAnnotationLiteral.getName()))
-                        .build();
-
-                ClassCreator literalClassCreator = ClassCreator.builder().classOutput(classOutput)
-                        .className(literalClassName)
-                        .signature(signature)
-                        .superClass(AnnotationLiteral.class)
-                        .interfaces(eventAnnotationLiteral.getName().toString())
-                        .build();
-
-                Class<?>[] parameterTypes = new Class<?>[eventAnnotationLiteral.getAttributes().size()];
-                Arrays.fill(parameterTypes, String.class);
-
-                MethodCreator constructorCreator = literalClassCreator.getMethodCreator("<init>", "V",
-                        (Object[]) parameterTypes);
-                constructorCreator.invokeSpecialMethod(MethodDescriptor.ofConstructor(AnnotationLiteral.class),
-                        constructorCreator.getThis());
-                for (int i = 0; i < eventAnnotationLiteral.getAttributes().size(); i++) {
-                    constructorCreator.writeInstanceField(
-                            FieldDescriptor.of(literalClassName, eventAnnotationLiteral.getAttributes().get(i), String.class),
-                            constructorCreator.getThis(), constructorCreator.getMethodParam(i));
-                    constructorCreator.setModifiers(Modifier.PUBLIC);
-                }
-                constructorCreator.returnValue(null);
-
-                for (String attribute : eventAnnotationLiteral.getAttributes()) {
-                    // we only support String for now
-                    literalClassCreator.getFieldCreator(attribute, String.class)
-                            .setModifiers(Modifier.PRIVATE);
-                    MethodCreator getterCreator = literalClassCreator.getMethodCreator(attribute, String.class);
-                    getterCreator.setModifiers(Modifier.PUBLIC);
-                    getterCreator.returnValue(getterCreator.readInstanceField(
-                            FieldDescriptor.of(literalClassName, attribute, String.class), getterCreator.getThis()));
-                }
-
-                literalClassCreator.close();
+                //
+                io.quarkus.gizmo2.Gizmo gizmo = io.quarkus.gizmo2.Gizmo.create((cd, bytes) -> classOutput.write(cd.descriptorString().substring(0, cd.descriptorString().length() - 1), bytes));
+                gizmo.class_(ClassDesc.of(literalClassName), cc -> {
+                    cc.withFlag(AccessFlag.PUBLIC);
+                    cc.withFlag(AccessFlag.FINAL);
+                    cc.extends_(AnnotationLiteral.class);
+                    cc.implements_(ClassDesc.of(eventAnnotationLiteral.getName().toString()));
+                    List<String> attributes = eventAnnotationLiteral.getAttributes();
+                    //
+                    // make fields
+                    List<FieldDesc> fields = attributes.stream().map(n -> cc.field(n, fc -> {
+                        fc.withFlag(AccessFlag.PRIVATE);
+                        fc.withFlag(AccessFlag.FINAL);
+                    })).toList();
+                    //
+                    // make getters
+                    for (int i = 0; i < attributes.size(); i++) {
+                        FieldDesc fieldDesc = fields.get(i);
+                        cc.method(attributes.get(i), imc -> {
+                            imc.withFlag(AccessFlag.PUBLIC);
+                            imc.body((b0, this_) -> {
+                                b0.return_(this_.field(fieldDesc));
+                            });
+                        });
+                    }
+                    //
+                    // make ctor
+                    cc.constructor(mc -> {
+                        List<ParamVar> params = attributes.stream().map(n -> mc.parameter(n, String.class)).toList();
+                        mc.body((b0, this_) -> {
+                            b0.invokeSpecial(this_, ConstructorDesc.of(AnnotationLiteral.class), List.of());
+                            for (int i = 0; i < attributes.size(); i++) {
+                                InstanceFieldVar f = this_.field(fields.get(i));
+                                b0.set(f, params.get(i));
+                            }
+                            b0.return_();
+                        });
+                    });
+                });
             }
         }
     }
