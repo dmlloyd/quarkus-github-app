@@ -6,8 +6,6 @@ import static io.quarkiverse.githubapp.deployment.GitHubAppDotNames.EVENT;
 import static io.quarkiverse.githubapp.deployment.GitHubAppDotNames.GITHUB;
 import static io.quarkiverse.githubapp.deployment.GitHubAppDotNames.GITHUB_EVENT;
 import static io.quarkiverse.githubapp.deployment.GitHubAppDotNames.RAW_EVENT;
-import static io.quarkus.gizmo.Type.classType;
-import static io.quarkus.gizmo.Type.parameterizedType;
 
 import java.io.IOException;
 import java.io.PrintStream;
@@ -30,38 +28,11 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
-import io.github.dmlloyd.classfile.extras.reflect.AccessFlag;
-import io.quarkus.gizmo2.ConstructorDesc;
-import io.quarkus.gizmo2.FieldDesc;
-import io.quarkus.gizmo2.InstanceFieldVar;
-import io.quarkus.gizmo2.ParamVar;
-import jakarta.enterprise.event.Event;
-import jakarta.enterprise.util.AnnotationLiteral;
-import jakarta.inject.Inject;
-import jakarta.inject.Singleton;
-
-import org.jboss.jandex.AnnotationInstance;
-import org.jboss.jandex.AnnotationTarget.Kind;
-import org.jboss.jandex.AnnotationValue;
-import org.jboss.jandex.ClassInfo;
-import org.jboss.jandex.CompositeIndex;
-import org.jboss.jandex.DotName;
-import org.jboss.jandex.IndexView;
-import org.jboss.jandex.MethodInfo;
-import org.jboss.jandex.MethodParameterInfo;
-import org.jboss.jandex.Type;
-import org.jboss.logging.Logger;
-import org.kohsuke.github.GHEventPayload;
-import org.kohsuke.github.GHRepository;
-import org.kohsuke.github.GitHub;
-import org.objectweb.asm.ClassVisitor;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
-
 import com.github.benmanes.caffeine.cache.CacheLoader;
-
+import io.github.dmlloyd.classfile.extras.reflect.AccessFlag;
 import io.quarkiverse.githubapp.ConfigFile;
 import io.quarkiverse.githubapp.GitHubEvent;
 import io.quarkiverse.githubapp.TokenGitHubClients;
@@ -80,7 +51,6 @@ import io.quarkiverse.githubapp.runtime.Routes;
 import io.quarkiverse.githubapp.runtime.UtilsProducer;
 import io.quarkiverse.githubapp.runtime.config.CheckedConfigProvider;
 import io.quarkiverse.githubapp.runtime.error.DefaultErrorHandler;
-import io.quarkiverse.githubapp.runtime.error.ErrorHandlerBridgeFunction;
 import io.quarkiverse.githubapp.runtime.github.GitHubConfigFileProviderImpl;
 import io.quarkiverse.githubapp.runtime.github.GitHubFileDownloader;
 import io.quarkiverse.githubapp.runtime.github.GitHubService;
@@ -96,7 +66,6 @@ import io.quarkus.arc.deployment.GeneratedBeanBuildItem;
 import io.quarkus.arc.deployment.GeneratedBeanGizmoAdaptor;
 import io.quarkus.arc.processor.BuiltinScope;
 import io.quarkus.arc.processor.DotNames;
-import io.quarkus.arc.processor.MethodDescriptors;
 import io.quarkus.deployment.GeneratedClassGizmoAdaptor;
 import io.quarkus.deployment.IsDevelopment;
 import io.quarkus.deployment.annotations.BuildProducer;
@@ -113,8 +82,6 @@ import io.quarkus.deployment.builditem.ShutdownContextBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveHierarchyBuildItem;
 import io.quarkus.gizmo.AnnotatedElement;
-import io.quarkus.gizmo.AssignableResultHandle;
-import io.quarkus.gizmo.BranchResult;
 import io.quarkus.gizmo.BytecodeCreator;
 import io.quarkus.gizmo.CatchBlockCreator;
 import io.quarkus.gizmo.ClassCreator;
@@ -125,8 +92,16 @@ import io.quarkus.gizmo.Gizmo;
 import io.quarkus.gizmo.MethodCreator;
 import io.quarkus.gizmo.MethodDescriptor;
 import io.quarkus.gizmo.ResultHandle;
-import io.quarkus.gizmo.SignatureBuilder;
 import io.quarkus.gizmo.TryBlock;
+import io.quarkus.gizmo2.Constant;
+import io.quarkus.gizmo2.ConstructorDesc;
+import io.quarkus.gizmo2.Expr;
+import io.quarkus.gizmo2.FieldDesc;
+import io.quarkus.gizmo2.InstanceFieldVar;
+import io.quarkus.gizmo2.LocalVar;
+import io.quarkus.gizmo2.MethodDesc;
+import io.quarkus.gizmo2.ParamVar;
+import io.quarkus.gizmo2.creator.BlockCreator;
 import io.quarkus.maven.dependency.GACT;
 import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.util.HashUtil;
@@ -137,6 +112,28 @@ import io.quarkus.vertx.http.deployment.webjar.WebJarResultsBuildItem;
 import io.smallrye.graphql.client.dynamic.api.DynamicGraphQLClient;
 import io.vertx.core.Handler;
 import io.vertx.ext.web.RoutingContext;
+import jakarta.enterprise.event.Event;
+import jakarta.enterprise.event.Observes;
+import jakarta.enterprise.util.AnnotationLiteral;
+import jakarta.inject.Inject;
+import jakarta.inject.Singleton;
+import org.jboss.jandex.AnnotationInstance;
+import org.jboss.jandex.AnnotationTarget.Kind;
+import org.jboss.jandex.AnnotationValue;
+import org.jboss.jandex.ClassInfo;
+import org.jboss.jandex.CompositeIndex;
+import org.jboss.jandex.DotName;
+import org.jboss.jandex.IndexView;
+import org.jboss.jandex.MethodInfo;
+import org.jboss.jandex.MethodParameterInfo;
+import org.jboss.jandex.Type;
+import org.jboss.logging.Logger;
+import org.kohsuke.github.GHEventPayload;
+import org.kohsuke.github.GHRepository;
+import org.kohsuke.github.GitHub;
+import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
 class GitHubAppProcessor {
 
@@ -146,16 +143,6 @@ class GitHubAppProcessor {
 
     private static final String EVENT_EMITTER_FIELD = "eventEmitter";
     private static final String GITHUB_SERVICE_FIELD = "gitHubService";
-
-    private static final MethodDescriptor EVENT_SELECT = MethodDescriptor.ofMethod(Event.class, "select", Event.class,
-            Annotation[].class);
-    private static final MethodDescriptor EVENT_FIRE_ASYNC = MethodDescriptor.ofMethod(Event.class, "fireAsync",
-            CompletionStage.class, Object.class);
-    private static final MethodDescriptor COMPLETION_STAGE_TO_COMPLETABLE_FUTURE = MethodDescriptor.ofMethod(
-            CompletionStage.class,
-            "toCompletableFuture", CompletableFuture.class);
-    private static final MethodDescriptor COMPLETABLE_FUTURE_JOIN = MethodDescriptor.ofMethod(CompletableFuture.class,
-            "join", Object.class);
 
     private static final DotName WITH_BRIDGE_METHODS = DotName
             .createSimple("com.infradna.tool.bridge_method_injector.WithBridgeMethods");
@@ -521,168 +508,168 @@ class GitHubAppProcessor {
 
         reflectiveClasses.produce(ReflectiveClassBuildItem.builder(dispatcherClassName).methods(true).fields(true).build());
 
-        ClassCreator dispatcherClassCreator = ClassCreator.builder().classOutput(beanClassOutput)
-                .className(dispatcherClassName)
-                .build();
+        io.quarkus.gizmo2.Gizmo gizmo = io.quarkus.gizmo2.Gizmo.create((cd, bytes) -> beanClassOutput.write(cd.descriptorString().substring(0, cd.descriptorString().length() - 1), bytes));
 
-        dispatcherClassCreator.addAnnotation(Singleton.class);
+        gizmo.class_(ClassDesc.of(dispatcherClassName), cc -> {
+            cc.addAnnotation(Singleton.class);
+            FieldDesc eventField = cc.field(EVENT_EMITTER_FIELD, fc -> {
+                fc.withType(Event.class);
+                fc.addAnnotation(Inject.class);
+                fc.withFlag(AccessFlag.PROTECTED);
+                //fc.withGenericType(Signature.of(...))
+            });
+            FieldDesc gitHubServiceField = cc.field(GITHUB_SERVICE_FIELD, fc -> {
+                fc.withType(GitHubService.class);
+                fc.addAnnotation(Inject.class);
+                fc.withFlag(AccessFlag.PROTECTED);
+                //fc.withGenericType(Signature.of(...))
+            });
+            cc.method("dispatch", mc -> {
+                mc.addAnnotation(Observes.class);
+                ParamVar gitHubEvent = mc.parameter("gitHubEvent", GitHubEvent.class);
+                mc.body((b0, this_) -> {
+                    LocalVar installationId = b0.define("installationId", b0.invokeVirtual(gitHubEvent,
+                        MethodDesc.of(GitHubEvent.class, "getInstallationId", Long.class), List.of()));
+                    LocalVar dispatchedEvent = b0.define("dispatchedEvent", b0.invokeVirtual(gitHubEvent,
+                        MethodDesc.of(GitHubEvent.class, "getEvent", String.class), List.of()));
+                    LocalVar dispatchedAction = b0.define("dispatchedAction", b0.invokeVirtual(gitHubEvent,
+                        MethodDesc.of(GitHubEvent.class, "getAction", String.class), List.of()));
+                    LocalVar dispatchedPayload = b0.define("dispatchedPayload", b0.invokeVirtual(gitHubEvent,
+                        MethodDesc.of(GitHubEvent.class, "getPayload", String.class), List.of()));
+                    b0.try_(t0 -> {
+                        t0.body(b1 -> {
+                            LocalVar gitHub = b1.declare("gitHub", GitHub.class);
+                            LocalVar gitHubGraphQLClient = b1.declare("gitHubGraphQLClient", DynamicGraphQLClient.class);
+                            b1.ifElse(b1.ne(installationId, Constant.ofNull(Long.class)), true2 -> {
+                                true2.set(gitHub,
+                                    true2.invokeVirtual(
+                                        this_.field(gitHubServiceField),
+                                        MethodDesc.of(GitHubService.class, "getInstallationClient", GitHub.class, long.class),
+                                        List.of(true2.unbox(installationId))
+                                    )
+                                );
+                                if (dispatchingConfiguration.requiresGraphQLClient()) {
+                                    true2.set(gitHubGraphQLClient,
+                                        true2.invokeVirtual(
+                                            this_.field(gitHubServiceField),
+                                            MethodDesc.of(GitHubService.class, "getInstallationClient", DynamicGraphQLClient.class, long.class),
+                                            List.of(true2.unbox(installationId))
+                                        )
+                                    );
+                                } else {
+                                    true2.set(gitHubGraphQLClient, Constant.ofNull(DynamicGraphQLClient.class));
+                                }
+                            }, false2 -> {
+                                false2.set(gitHub,
+                                    false2.invokeVirtual(
+                                        this_.field(gitHubServiceField),
+                                        MethodDesc.of(GitHubService.class, "getTokenOrApplicationClient", GitHub.class),
+                                        List.of()
+                                    )
+                                );
+                                if (dispatchingConfiguration.requiresGraphQLClient()) {
+                                    false2.set(gitHubGraphQLClient,
+                                        false2.invokeVirtual(
+                                            this_.field(gitHubServiceField),
+                                            MethodDesc.of(GitHubService.class, "getTokenGraphQLClientOrNull", DynamicGraphQLClient.class),
+                                            List.of()
+                                        )
+                                    );
+                                } else {
+                                    false2.set(gitHubGraphQLClient, Constant.ofNull(DynamicGraphQLClient.class));
+                                }
+                            });
+                            b1.switch_(dispatchedEvent, sw2 -> {
+                                for (EventDispatchingConfiguration eventDispatchingConfiguration : dispatchingConfiguration.getEventConfigurations().values()) {
+                                    String dcEvent = eventDispatchingConfiguration.getEvent();
+                                    String payloadType = eventDispatchingConfiguration.getPayloadType();
+                                    // conditionally wrapping code with a block is a little bit weird...
+                                    Consumer<Consumer<BlockCreator>> body;
+                                    if (Events.ALL.equals(dcEvent)) {
+                                        body = sw2::default_;
+                                    } else {
+                                        body = bc -> sw2.case_(Constant.of(dcEvent), bc);
+                                    }
+                                    body.accept(b3 -> {
+                                        LocalVar payloadInstance = b3.define("payloadInstance",
+                                            payloadType != null ?
+                                                b3.invokeVirtual(
+                                                    gitHub,
+                                                    MethodDesc.of(GitHub.class, "parseEventPayload", GHEventPayload.class, Reader.class, Class.class),
+                                                    List.of(
+                                                        b3.new_(StringReader.class, List.of(dispatchedPayload)),
+                                                        Constant.of(ClassDesc.of(payloadType))
+                                                    )
+                                                ) :
+                                                Constant.ofNull(GHEventPayload.class)
+                                        );
+                                        LocalVar multiplexedEvent = b3.define("multiplexedEvent", b3.new_(MultiplexedEvent.class, List.of(
+                                            gitHubEvent,
+                                            payloadInstance,
+                                            gitHub,
+                                            gitHubGraphQLClient
+                                        )));
+                                        for (Entry<String, Set<EventAnnotation>> eventAnnotationsEntry : eventDispatchingConfiguration.getEventAnnotations()
+                                            .entrySet()) {
 
-        FieldCreator eventFieldCreator = dispatcherClassCreator.getFieldCreator(EVENT_EMITTER_FIELD, Event.class);
-        eventFieldCreator.addAnnotation(Inject.class);
-        eventFieldCreator.setModifiers(Modifier.PROTECTED);
-        eventFieldCreator.setSignature(SignatureBuilder.forField()
-                .setType(parameterizedType(classType(Event.class), classType(MultiplexedEvent.class)))
-                .build());
+                                            String action = eventAnnotationsEntry.getKey();
 
-        FieldCreator gitHubServiceFieldCreator = dispatcherClassCreator.getFieldCreator(GITHUB_SERVICE_FIELD,
-                GitHubService.class);
-        gitHubServiceFieldCreator.addAnnotation(Inject.class);
-        gitHubServiceFieldCreator.setModifiers(Modifier.PROTECTED);
+                                            for (EventAnnotation eventAnnotation : eventAnnotationsEntry.getValue()) {
+                                                // todo: should this be another switch?
+                                                b3.block(b4 -> {
+                                                    LocalVar annotationLiteral = b4.define("annotationLiteral", b4.new_(
+                                                        ClassDesc.of(getLiteralClassName(eventAnnotation.getName())),
+                                                        eventAnnotation.getValues().stream()
+                                                            .map(AnnotationValue::asString)
+                                                            .map(Constant::of)
+                                                            .map(Expr.class::cast)
+                                                            .toList()
+                                                        )
+                                                    );
+                                                    Consumer<Consumer<BlockCreator>> body2;
+                                                    if (Actions.ALL.equals(action)) {
+                                                        body2 = b4::block;
+                                                    } else {
+                                                        body2 = bc -> b4.if_(b4.objEquals(Constant.of(action), dispatchedAction), bc);
+                                                    }
+                                                    body2.accept(b5 -> {
+                                                        LocalVar cdiEvent = b5.define("cdiEvent", b5.invokeInterface(
+                                                            this_.field(eventField),
+                                                            MethodDesc.of(Event.class, "select", Event.class, Annotation[].class),
+                                                            List.of(b5.newArray(Annotation.class, List.of(annotationLiteral)))
+                                                        ));
 
-        MethodCreator dispatchMethodCreator = dispatcherClassCreator.getMethodCreator(
-                "dispatch",
-                void.class,
-                GitHubEvent.class);
-        dispatchMethodCreator.setModifiers(Modifier.PUBLIC);
-        dispatchMethodCreator.getParameterAnnotations(0).addAnnotation(DotNames.OBSERVES.toString());
+                                                        LocalVar fireAsyncCompletionStage = b5.define("fireAsyncCompletionStage", b5.invokeInterface(
+                                                            cdiEvent,
+                                                            MethodDesc.of(Event.class, "fireAsync", CompletionStage.class, Object.class),
+                                                            List.of(gitHubEvent)
+                                                        ));
 
-        ResultHandle gitHubEventRh = dispatchMethodCreator.getMethodParam(0);
-
-        ResultHandle installationIdRh = dispatchMethodCreator.invokeVirtualMethod(
-                MethodDescriptor.ofMethod(GitHubEvent.class, "getInstallationId", Long.class),
-                gitHubEventRh);
-        ResultHandle dispatchedEventRh = dispatchMethodCreator.invokeVirtualMethod(
-                MethodDescriptor.ofMethod(GitHubEvent.class, "getEvent", String.class),
-                gitHubEventRh);
-        ResultHandle dispatchedActionRh = dispatchMethodCreator.invokeVirtualMethod(
-                MethodDescriptor.ofMethod(GitHubEvent.class, "getAction", String.class),
-                gitHubEventRh);
-        ResultHandle dispatchedPayloadRh = dispatchMethodCreator.invokeVirtualMethod(
-                MethodDescriptor.ofMethod(GitHubEvent.class, "getPayload", String.class),
-                gitHubEventRh);
-
-        TryBlock tryBlock = dispatchMethodCreator.tryBlock();
-
-        // if the installation id is defined, we can push the installation client
-        // if not, we have to use the very limited application client
-        AssignableResultHandle gitHubRh = tryBlock.createVariable(GitHub.class);
-        AssignableResultHandle gitHubGraphQLClientRh = tryBlock.createVariable(DynamicGraphQLClient.class);
-        BranchResult testInstallationId = tryBlock.ifNotNull(installationIdRh);
-        BytecodeCreator installationIdSet = testInstallationId.trueBranch();
-        installationIdSet.assign(gitHubRh, installationIdSet.invokeVirtualMethod(
-                MethodDescriptor.ofMethod(GitHubService.class, "getInstallationClient", GitHub.class, long.class),
-                installationIdSet.readInstanceField(
-                        FieldDescriptor.of(dispatcherClassCreator.getClassName(), GITHUB_SERVICE_FIELD, GitHubService.class),
-                        installationIdSet.getThis()),
-                installationIdRh));
-        if (dispatchingConfiguration.requiresGraphQLClient()) {
-            installationIdSet.assign(gitHubGraphQLClientRh, installationIdSet.invokeVirtualMethod(
-                    MethodDescriptor.ofMethod(GitHubService.class, "getInstallationGraphQLClient", DynamicGraphQLClient.class,
-                            long.class),
-                    installationIdSet.readInstanceField(
-                            FieldDescriptor.of(dispatcherClassCreator.getClassName(), GITHUB_SERVICE_FIELD,
-                                    GitHubService.class),
-                            installationIdSet.getThis()),
-                    installationIdRh));
-        } else {
-            installationIdSet.assign(gitHubGraphQLClientRh, installationIdSet.loadNull());
-        }
-        BytecodeCreator installationIdNull = testInstallationId.falseBranch();
-        installationIdNull.assign(gitHubRh, installationIdNull.invokeVirtualMethod(
-                MethodDescriptor.ofMethod(GitHubService.class, "getTokenOrApplicationClient", GitHub.class),
-                installationIdNull.readInstanceField(
-                        FieldDescriptor.of(dispatcherClassCreator.getClassName(), GITHUB_SERVICE_FIELD, GitHubService.class),
-                        installationIdNull.getThis())));
-        if (dispatchingConfiguration.requiresGraphQLClient()) {
-            installationIdNull.assign(gitHubGraphQLClientRh, installationIdNull.invokeVirtualMethod(
-                    MethodDescriptor.ofMethod(GitHubService.class, "getTokenGraphQLClientOrNull", DynamicGraphQLClient.class),
-                    installationIdNull.readInstanceField(
-                            FieldDescriptor.of(dispatcherClassCreator.getClassName(), GITHUB_SERVICE_FIELD,
-                                    GitHubService.class),
-                            installationIdNull.getThis())));
-        } else {
-            installationIdNull.assign(gitHubGraphQLClientRh, installationIdNull.loadNull());
-        }
-
-        for (EventDispatchingConfiguration eventDispatchingConfiguration : dispatchingConfiguration.getEventConfigurations()
-                .values()) {
-            ResultHandle eventRh = tryBlock.load(eventDispatchingConfiguration.getEvent());
-            String payloadType = eventDispatchingConfiguration.getPayloadType();
-
-            BytecodeCreator eventMatchesCreator;
-
-            if (Events.ALL.equals(eventDispatchingConfiguration.getEvent())) {
-                eventMatchesCreator = tryBlock;
-            } else {
-                eventMatchesCreator = tryBlock
-                        .ifTrue(tryBlock.invokeVirtualMethod(MethodDescriptors.OBJECT_EQUALS, eventRh,
-                                dispatchedEventRh))
-                        .trueBranch();
-            }
-
-            ResultHandle payloadInstanceRh;
-            if (payloadType != null) {
-                payloadInstanceRh = eventMatchesCreator.invokeVirtualMethod(
-                        MethodDescriptor.ofMethod(GitHub.class, "parseEventPayload", GHEventPayload.class, Reader.class,
-                                Class.class),
-                        gitHubRh,
-                        eventMatchesCreator.newInstance(MethodDescriptor.ofConstructor(StringReader.class, String.class),
-                                dispatchedPayloadRh),
-                        eventMatchesCreator.loadClass(payloadType));
-            } else {
-                // all events are raw, no need to actually parse the payload
-                payloadInstanceRh = eventMatchesCreator.loadNull();
-            }
-
-            ResultHandle multiplexedEventRh = eventMatchesCreator.newInstance(MethodDescriptor
-                    .ofConstructor(MultiplexedEvent.class, GitHubEvent.class, GHEventPayload.class, GitHub.class,
-                            DynamicGraphQLClient.class),
-                    gitHubEventRh, payloadInstanceRh, gitHubRh, gitHubGraphQLClientRh);
-
-            for (Entry<String, Set<EventAnnotation>> eventAnnotationsEntry : eventDispatchingConfiguration.getEventAnnotations()
-                    .entrySet()) {
-                String action = eventAnnotationsEntry.getKey();
-
-                for (EventAnnotation eventAnnotation : eventAnnotationsEntry.getValue()) {
-                    Class<?>[] literalParameterTypes = new Class<?>[eventAnnotation.getValues().size()];
-                    Arrays.fill(literalParameterTypes, String.class);
-                    List<ResultHandle> literalParameters = new ArrayList<>();
-                    for (AnnotationValue eventAnnotationValue : eventAnnotation.getValues()) {
-                        literalParameters.add(eventMatchesCreator.load(eventAnnotationValue.asString()));
-                    }
-
-                    ResultHandle annotationLiteralRh = eventMatchesCreator.newInstance(MethodDescriptor
-                            .ofConstructor(getLiteralClassName(eventAnnotation.getName()), (Object[]) literalParameterTypes),
-                            literalParameters.toArray(ResultHandle[]::new));
-                    ResultHandle annotationLiteralArrayRh = eventMatchesCreator.newArray(Annotation.class, 1);
-                    eventMatchesCreator.writeArrayValue(annotationLiteralArrayRh, 0, annotationLiteralRh);
-
-                    if (Actions.ALL.equals(action)) {
-                        fireAsyncAction(eventMatchesCreator, launchMode.getLaunchMode(), dispatcherClassCreator.getClassName(),
-                                gitHubEventRh, multiplexedEventRh, annotationLiteralArrayRh);
-                    } else {
-                        BytecodeCreator actionMatchesCreator = eventMatchesCreator
-                                .ifTrue(eventMatchesCreator.invokeVirtualMethod(MethodDescriptors.OBJECT_EQUALS,
-                                        eventMatchesCreator.load(action), dispatchedActionRh))
-                                .trueBranch();
-
-                        fireAsyncAction(actionMatchesCreator, launchMode.getLaunchMode(), dispatcherClassCreator.getClassName(),
-                                gitHubEventRh, multiplexedEventRh, annotationLiteralArrayRh);
-                    }
-                }
-            }
-        }
-
-        CatchBlockCreator catchBlockCreator = tryBlock.addCatch(Throwable.class);
-        catchBlockCreator.invokeVirtualMethod(
-                MethodDescriptor.ofMethod(ErrorHandlerBridgeFunction.class, "apply", Void.class, Throwable.class),
-                catchBlockCreator.newInstance(
-                        MethodDescriptor.ofConstructor(ErrorHandlerBridgeFunction.class, GitHubEvent.class), gitHubEventRh),
-                catchBlockCreator.getCaughtException());
-
-        dispatchMethodCreator.returnValue(null);
-
-        dispatcherClassCreator.close();
+                                                        if (LaunchMode.TEST.equals(launchMode.getLaunchMode())) {
+                                                            LocalVar toFuture = b5.define("toFuture", b5.invokeInterface(
+                                                                fireAsyncCompletionStage,
+                                                                MethodDesc.of(CompletionStage.class, "toCompletableFuture", CompletableFuture.class),
+                                                                List.of()
+                                                            ));
+                                                            b5.invokeVirtual(
+                                                                toFuture,
+                                                                MethodDesc.of(CompletableFuture.class, "join", Object.class),
+                                                                List.of()
+                                                            );
+                                                        }
+                                                    });
+                                                });
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                            b1.return_();
+                        });
+                    });
+                });
+            });
+        });
     }
 
     /**
@@ -988,26 +975,6 @@ class GitHubAppProcessor {
             }
 
             multiplexerClassCreator.close();
-        }
-    }
-
-    private static ResultHandle fireAsyncAction(BytecodeCreator bytecodeCreator, LaunchMode launchMode, String className,
-            ResultHandle gitHubEventRh, ResultHandle multiplexedEventRh, ResultHandle annotationLiteralArrayRh) {
-        ResultHandle cdiEventRh = bytecodeCreator.invokeInterfaceMethod(EVENT_SELECT,
-                bytecodeCreator.readInstanceField(
-                        FieldDescriptor.of(className, EVENT_EMITTER_FIELD, Event.class),
-                        bytecodeCreator.getThis()),
-                annotationLiteralArrayRh);
-
-        ResultHandle fireAsyncCompletionStageRH = bytecodeCreator.invokeInterfaceMethod(EVENT_FIRE_ASYNC, cdiEventRh,
-                multiplexedEventRh);
-
-        if (LaunchMode.TEST.equals(launchMode)) {
-            ResultHandle toFutureRH = bytecodeCreator.invokeInterfaceMethod(COMPLETION_STAGE_TO_COMPLETABLE_FUTURE,
-                    fireAsyncCompletionStageRH);
-            return bytecodeCreator.invokeVirtualMethod(COMPLETABLE_FUTURE_JOIN, toFutureRH);
-        } else {
-            return fireAsyncCompletionStageRH;
         }
     }
 
