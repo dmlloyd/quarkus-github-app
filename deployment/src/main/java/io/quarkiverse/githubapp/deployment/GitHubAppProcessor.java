@@ -51,6 +51,7 @@ import io.quarkiverse.githubapp.runtime.Routes;
 import io.quarkiverse.githubapp.runtime.UtilsProducer;
 import io.quarkiverse.githubapp.runtime.config.CheckedConfigProvider;
 import io.quarkiverse.githubapp.runtime.error.DefaultErrorHandler;
+import io.quarkiverse.githubapp.runtime.error.ErrorHandlerBridgeFunction;
 import io.quarkiverse.githubapp.runtime.github.GitHubConfigFileProviderImpl;
 import io.quarkiverse.githubapp.runtime.github.GitHubFileDownloader;
 import io.quarkiverse.githubapp.runtime.github.GitHubService;
@@ -664,6 +665,14 @@ class GitHubAppProcessor {
                                     });
                                 }
                             });
+                            b1.return_();
+                        });
+                        t0.catch_(Throwable.class, (b1, t) -> {
+                            b1.invokeVirtual(
+                                b1.new_(ErrorHandlerBridgeFunction.class, List.of(gitHubEvent)),
+                                MethodDesc.of(ErrorHandlerBridgeFunction.class, "apply", Void.class, Throwable.class),
+                                List.of(t)
+                            );
                             b1.return_();
                         });
                     });
